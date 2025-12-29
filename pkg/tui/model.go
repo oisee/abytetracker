@@ -3,6 +3,7 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -168,6 +169,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "f8":
 		m.Player.Stop()
 
+	case "f9":
+		// Export to WAV
+		m.exportWAV()
+
 	// Navigation
 	case "up":
 		if m.CursorRow > 0 {
@@ -331,6 +336,44 @@ func (m *Model) clearCell() {
 	}
 }
 
+func (m *Model) exportWAV() {
+	filename := "output.wav"
+
+	// Calculate duration based on song length
+	// Each row = speed ticks, each tick = tempo-based duration
+	totalRows := 0
+	for _, patIdx := range m.Song.Order {
+		if int(patIdx) < len(m.Song.Patterns) {
+			totalRows += m.Song.Patterns[patIdx].Rows
+		}
+	}
+	ticksPerSecond := float64(m.Song.Tempo) * 2.0 / 5.0
+	secondsPerRow := float64(m.Song.Speed) / ticksPerSecond
+	duration := float64(totalRows) * secondsPerRow
+	if duration < 1 {
+		duration = 10 // Default 10 seconds
+	}
+
+	m.StatusMsg = fmt.Sprintf("Exporting %.1fs to %s...", duration, filename)
+
+	// Create file
+	f, err := os.Create(filename)
+	if err != nil {
+		m.StatusMsg = "Export failed: " + err.Error()
+		return
+	}
+	defer f.Close()
+
+	// Export
+	err = audio.ExportWAV(m.Player, f, duration)
+	if err != nil {
+		m.StatusMsg = "Export failed: " + err.Error()
+		return
+	}
+
+	m.StatusMsg = fmt.Sprintf("Exported to %s (%.1fs)", filename, duration)
+}
+
 // keyToNote converts keyboard key to MIDI note
 func keyToNote(key string, octave int) int8 {
 	// Piano-style keyboard layout:
@@ -482,6 +525,7 @@ func (m Model) renderRow(pat *tracker.Pattern, row int) string {
 
 func (m Model) renderCell(note tracker.Note, row, ch int) string {
 	isCursor := row == m.CursorRow && ch == m.CursorCh
+	isEmpty := note.Pitch == -1 && note.Instrument == 0 && note.Effect.Type == 0 && note.Effect.Param == 0
 
 	// Note
 	noteStr := tracker.NoteToString(note.Pitch)
@@ -497,27 +541,23 @@ func (m Model) renderCell(note tracker.Note, row, ch int) string {
 		noteStyle = noteStyle.Background(lipgloss.Color("6"))
 	}
 
-	// Instrument
+	// Instrument - only show if note is present or instrument explicitly set
 	instStr := "--"
-	if note.Instrument > 0 {
+	instStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	if note.Instrument > 0 && (note.Pitch >= 0 || note.Pitch == -2 || !isEmpty) {
 		instStr = fmt.Sprintf("%02X", note.Instrument)
-	}
-	instStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
-	if note.Instrument == 0 {
-		instStyle = instStyle.Foreground(lipgloss.Color("8"))
+		instStyle = instStyle.Foreground(lipgloss.Color("11"))
 	}
 	if isCursor && m.CursorCol == ColInstrument {
 		instStyle = instStyle.Background(lipgloss.Color("6"))
 	}
 
-	// Effect (simplified)
+	// Effect
 	fxStr := "..."
+	fxStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	if note.Effect.Type != 0 || note.Effect.Param != 0 {
 		fxStr = fmt.Sprintf("%X%02X", note.Effect.Type, note.Effect.Param)
-	}
-	fxStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("13"))
-	if note.Effect.Type == 0 && note.Effect.Param == 0 {
-		fxStyle = fxStyle.Foreground(lipgloss.Color("8"))
+		fxStyle = fxStyle.Foreground(lipgloss.Color("13"))
 	}
 	if isCursor && (m.CursorCol == ColEffect || m.CursorCol == ColEffectParam) {
 		fxStyle = fxStyle.Background(lipgloss.Color("6"))
@@ -527,8 +567,13 @@ func (m Model) renderCell(note tracker.Note, row, ch int) string {
 }
 
 func (m Model) footerView() string {
-	keys := " [Space]Play [F5]From Row [F8]Stop [Tab]Ch [*/]Oct [F1]Help [Q]Quit"
-	return lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(keys)
+	keys := " [Space]Play [F5]From Row [F8]Stop [F9]Export WAV [Tab]Ch [*/]Oct [F1]Help [Q]Quit"
+	footer := lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(keys)
+	if m.StatusMsg != "" {
+		status := lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Render("\n " + m.StatusMsg)
+		footer += status
+	}
+	return footer
 }
 
 func (m Model) helpView() string {
