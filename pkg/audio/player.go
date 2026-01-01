@@ -1,10 +1,19 @@
 package audio
 
 import (
+	"math"
 	"sync"
+	"time"
 
 	"github.com/anthropics/abytetracker/pkg/tracker"
 )
+
+// Callbacks for playback events
+type PlayerCallbacks struct {
+	OnTick    func(pos, pat, row, tick int)
+	OnRow     func(pos, pat, row int)
+	OnPattern func(pos, pat int)
+}
 
 // Player manages song playback
 type Player struct {
@@ -22,10 +31,14 @@ type Player struct {
 	// Timing
 	TickSamples  int // Samples per tick
 	TickCounter  int // Sample counter for current tick
+	LastTime     int64 // Last update time in nanoseconds
 
 	// Echo buffers (per channel)
 	EchoBuffers [][]float64
 	EchoPos     []int
+
+	// Callbacks
+	Callbacks PlayerCallbacks
 
 	mu sync.Mutex
 }
@@ -73,6 +86,12 @@ func (p *Player) Play() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.Playing = true
+	p.LastTime = time.Now().UnixNano()
+	// Process first row immediately
+	p.ProcessRow()
+	if p.Callbacks.OnRow != nil {
+		p.Callbacks.OnRow(p.Position, p.Pattern, p.Row)
+	}
 }
 
 // Stop stops playback
@@ -84,6 +103,66 @@ func (p *Player) Stop() {
 	for _, ch := range p.Channels {
 		ch.Active = false
 		ch.Volume = 0
+	}
+}
+
+// AdvanceTime advances playback based on elapsed time (for simulation without audio)
+func (p *Player) AdvanceTime() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if !p.Playing {
+		return
+	}
+
+	now := time.Now().UnixNano()
+	elapsed := now - p.LastTime
+	p.LastTime = now
+
+	// Calculate samples that would have been generated
+	samplesElapsed := int(float64(elapsed) * float64(p.SampleRate) / 1e9)
+
+	for i := 0; i < samplesElapsed; i++ {
+		p.TickCounter++
+		if p.TickCounter >= p.TickSamples {
+			p.TickCounter = 0
+
+			// Process tick effects
+			p.ProcessTick()
+
+			if p.Callbacks.OnTick != nil {
+				p.Callbacks.OnTick(p.Position, p.Pattern, p.Row, p.Tick)
+			}
+
+			p.Tick++
+			if p.Tick >= int(p.Song.Speed) {
+				// Advance to next row
+				p.Tick = 0
+				p.Row++
+
+				if p.Pattern < len(p.Song.Patterns) && p.Row >= p.Song.Patterns[p.Pattern].Rows {
+					// Advance to next position
+					p.Row = 0
+					oldPos := p.Position
+					p.Position++
+					if p.Position >= len(p.Song.Order) {
+						p.Position = 0 // Loop
+					}
+					p.Pattern = int(p.Song.Order[p.Position])
+
+					if p.Callbacks.OnPattern != nil && p.Position != oldPos {
+						p.Callbacks.OnPattern(p.Position, p.Pattern)
+					}
+				}
+
+				// Process new row
+				p.ProcessRow()
+
+				if p.Callbacks.OnRow != nil {
+					p.Callbacks.OnRow(p.Position, p.Pattern, p.Row)
+				}
+			}
+		}
 	}
 }
 
@@ -194,6 +273,10 @@ func (p *Player) processEffect(ch int, fx tracker.Effect) {
 		delay := int(fx.Param & 0x0F)
 		cs.EchoSource = srcCh
 		cs.EchoDelay = delay
+
+	case tracker.FxDuty:
+		// Kxx: set duty cycle (00-FF, 80=50%)
+		cs.Oscillator.SetDuty(float64(fx.Param) / 255.0)
 	}
 }
 
@@ -272,7 +355,6 @@ func (p *Player) GenerateSamples(buffer []float64) {
 			p.TickCounter++
 			if p.TickCounter >= p.TickSamples {
 				p.TickCounter = 0
-				p.Tick++
 
 				if p.Tick == 0 {
 					// First tick of row - process row
@@ -282,6 +364,7 @@ func (p *Player) GenerateSamples(buffer []float64) {
 				// Process tick effects
 				p.ProcessTick()
 
+				p.Tick++
 				if p.Tick >= int(p.Song.Speed) {
 					// Advance to next row
 					p.Tick = 0
@@ -328,12 +411,17 @@ func (p *Player) GenerateSamples(buffer []float64) {
 			sample += chSample
 		}
 
-		// Simple limiter
-		if sample > 1.0 {
-			sample = 1.0
+		// Mix down with headroom (divide by sqrt of channels for proper gain staging)
+		numCh := float64(len(p.Channels))
+		if numCh > 1 {
+			sample /= math.Sqrt(numCh)
 		}
-		if sample < -1.0 {
-			sample = -1.0
+
+		// Soft limiter (tanh-style) to avoid hard clipping
+		if sample > 0.9 {
+			sample = 0.9 + 0.1*math.Tanh((sample-0.9)*10)
+		} else if sample < -0.9 {
+			sample = -0.9 + 0.1*math.Tanh((sample+0.9)*10)
 		}
 
 		buffer[i] = sample

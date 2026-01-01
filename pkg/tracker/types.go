@@ -33,6 +33,7 @@ const (
 	FxDelay      uint8 = 0x11 // Hxx - Note delay
 	FxRetrigger  uint8 = 0x12 // Ixy - Retrigger note
 	FxCut        uint8 = 0x13 // Jxx - Cut note after xx ticks
+	FxDuty       uint8 = 0x14 // Kxx - Set duty cycle (00-FF, 80=50%)
 )
 
 // Generator types for instruments
@@ -58,6 +59,7 @@ type Instrument struct {
 	Ornament  uint8     // Default ornament (0 = none)
 	Detune    int8      // Fine detune (-64 to +63)
 	Volume    uint8     // Default volume (0-64)
+	Duty      uint8     // Duty cycle for pulse wave (0-255, 128=50%)
 }
 
 // Envelope defines ADSR-like volume envelope

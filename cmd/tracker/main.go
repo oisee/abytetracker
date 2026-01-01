@@ -18,10 +18,11 @@ func main() {
 
 	var song *tracker.Song
 	var err error
+	var filename string
 
 	// Check if a file was provided
 	if flag.NArg() > 0 {
-		filename := flag.Arg(0)
+		filename = flag.Arg(0)
 		f, err := os.Open(filename)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error opening file: %v\n", err)
@@ -63,7 +64,7 @@ func main() {
 	_ = err
 
 	// Start TUI
-	model := tui.NewModel(song)
+	model := tui.NewModel(song, filename)
 	p := tea.NewProgram(model)
 
 	if _, err := p.Run(); err != nil {

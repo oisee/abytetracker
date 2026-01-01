@@ -13,6 +13,7 @@ type Oscillator struct {
 	Phase      float64
 	Frequency  float64
 	SampleRate float64
+	Duty       float64 // Duty cycle 0.0-1.0 (default 0.5 for square)
 }
 
 // NewOscillator creates a new oscillator
@@ -20,7 +21,19 @@ func NewOscillator(genType tracker.Generator, sampleRate float64) *Oscillator {
 	return &Oscillator{
 		Type:       genType,
 		SampleRate: sampleRate,
+		Duty:       0.5, // Default 50% duty
 	}
+}
+
+// SetDuty sets the duty cycle (0.0 to 1.0)
+func (o *Oscillator) SetDuty(duty float64) {
+	if duty < 0.0 {
+		duty = 0.0
+	}
+	if duty > 1.0 {
+		duty = 1.0
+	}
+	o.Duty = duty
 }
 
 // SetFrequency sets the oscillator frequency
@@ -80,7 +93,7 @@ func (o *Oscillator) sawtooth() float64 {
 
 // Square wave: _|-|_|-|
 func (o *Oscillator) square() float64 {
-	if o.Phase < 0.5 {
+	if o.Phase < o.Duty {
 		return 1.0
 	}
 	return -1.0
@@ -161,6 +174,12 @@ func (cs *ChannelState) TriggerNote(note int8, inst *tracker.Instrument, volume 
 	if inst != nil {
 		cs.Oscillator.Type = inst.Generator
 		cs.Ornament = int(inst.Ornament)
+		// Set duty cycle from instrument (128 = 50%)
+		if inst.Duty > 0 {
+			cs.Oscillator.SetDuty(float64(inst.Duty) / 255.0)
+		} else {
+			cs.Oscillator.SetDuty(0.5) // Default 50%
+		}
 		if volume < 0 {
 			cs.TargetVol = float64(inst.Volume) / 64.0
 		}
